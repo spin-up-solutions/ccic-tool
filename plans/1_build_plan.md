@@ -386,12 +386,16 @@ workspace = "/workspace-acme"          # derived from suffix; overridable
 
 [image]
 base = "ubuntu:24.04"
-apt_packages = []                      # extras on top of the baseline
+apt_packages = []
+node_major = "24"                      # ccic's own node, outside mise
+playwright_version = "1.58.0"          # ccic-pinned, not the project's
 
 [postgres]
 enabled  = true
 version  = "18"                        # 16 | 17 | 18
 database = "acme_development"
+user = "postgres"
+password = "postgres"
 
 [redis]
 enabled = false                        # second known service; not a plugin system
@@ -406,14 +410,14 @@ publish = []                           # deliberately empty; escape hatch only
 
 [firewall]
 enabled = true
-allow = []                             # extra domains
+allow = []                             # extra domains, added at container start
 
 [git]
 identity  = true                       # forward user.name / user.email from host
-allow_push = false                     # inject no credentials — see below
+allow_push = false                     # inject no credentials
 
 [env]
-passthrough = ["TZ"]                   # forwarded from host env
+passthrough = []                       # host env vars to forward
 file = ".ccic.local.env"               # gitignored, injected wholesale
 
 [claude]
@@ -624,7 +628,77 @@ not yet demonstrated.
 
 ---
 
-## 12. Delivery phases
+## 12. Phases 1 & 2 results
+
+**Both complete.** `ccic` is a working Go binary — **6.4 MB**, which is the size argument
+for Go over Bun borne out in practice rather than predicted.
+
+```
+cmd/ccic/main.go
+internal/config   .ccic.conf schema, defaults, validation, host git identity + timezone
+internal/mise     [tools]-only extraction from a project mise.toml
+internal/render   embedded container assets, compose + .ccic.md templating
+internal/dock     docker / docker compose wrapper
+internal/cli      cobra commands
+```
+
+Every container asset is embedded via `go:embed`, so the binary is genuinely self-contained.
+`hack/ccic.sh` has been deleted — its job was to prove Phase 0 and act as the spec, and the
+Go implementation now covers all of it.
+
+### What shipped
+
+| Phase 1 | Phase 2 |
+|---|---|
+| `init` (interactive + `--non-interactive`) | `exec`, `psql`, `up`, `stop`, `logs` |
+| `build` (`--no-cache`, `--base`) | `status`, `doctor` |
+| `start` (passes trailing args to claude) | `firewall on\|off\|status\|allow` |
+| `shell` | `regen`, `prune` |
+| `destroy` (`-y`), `force-rebuild` (`--volumes`, `--base`) | |
+
+### Six things the Go implementation got wrong, and their fixes
+
+1. **Duplicate environment key produced an invalid compose file.** `TZ` was both in the
+   default `[env] passthrough` and emitted explicitly, so compose refused the file. Fixed at
+   the root rather than by dropping the default: a reserved-key list now filters any
+   passthrough that ccic sets itself, and says which it dropped. `ccic build` also validates
+   with `docker compose config -q` first, so this class of error names ccic rather than
+   surfacing from inside a docker build.
+
+2. **`up` returned before the container was ready.** The entrypoint takes a few seconds
+   (mostly firewall DNS resolution), so `ccic status` immediately after `up` reported the
+   firewall as *off* when it was mid-apply — a genuinely misleading answer. The entrypoint
+   now writes a readiness marker, the claude service has a healthcheck on it, and `up` uses
+   `--wait`. Cost: ~3.7 s on a cold start, and correct state afterwards.
+
+3. **Compose's `--wait` chatter on every command.** `exec`, `psql` and `shell` each printed
+   eight "Running / Waiting / Healthy" lines before doing anything. Now suppressed when the
+   stack is already up, and shown only when something actually starts.
+
+4. **`doctor` failed on a fresh project.** Not being signed in yet is the normal state before
+   the first `ccic start`, not a fault. It is now reported as a note and does not fail the run.
+
+5. **`redis-tools` was missing.** ccic ships `postgresql-client` so Claude can inspect
+   postgres; enabling redis gave a service Claude could not talk to at all. Added, with
+   `file` alongside it.
+
+6. **Base image tag must include uid/gid.** They are baked into the image, so
+   `ccic-base:<version>-u<uid>-g<gid>` prevents silently reusing an image built for a
+   different user.
+
+### Shared base image, measured
+
+A second project (`beta`: python 3.13 via mise, redis, no postgres, firewall off) built in
+**15 seconds**, reusing the base. That is the whole argument for the base/project split, and
+it holds.
+
+Also verified on that project: `[tools]` extraction against a `mise.toml` containing
+`_.source = ".env.missing"`; `cap_add` correctly absent when the firewall is disabled;
+`DATABASE_URL` correctly unset with postgres off.
+
+---
+
+## 13. Delivery phases
 
 ### Phase 0 — prove the containers by hand, no CLI ✅ **done — see §11**
 Built as `templates/{Dockerfile.base,Dockerfile.project,compose*.yml,entrypoint.sh,init-firewall.sh,ccic.md.tmpl}`
@@ -643,11 +717,11 @@ All pass. Worth repeating against a real Rails app before Phase 2 — native gem
 and a JS bundler together are a harsher test than the fixture, and `BUNDLE_PATH`
 redirection is the one isolation path not yet exercised end to end.
 
-### Phase 1 — CLI skeleton
+### Phase 1 — CLI skeleton ✅ **done — see §12**
 `init`, `build`, `start`, `destroy`, `force-rebuild`, plus `shell` — templates embedded in
 the binary.
 
-### Phase 2 — the rest of the commands
+### Phase 2 — the rest of the commands ✅ **done — see §12**
 `exec`, `psql`, `status`, `stop`, `logs`, `doctor`, `firewall`, `regen`, `prune`.
 
 ### Phase 3 — release pipeline
@@ -658,7 +732,7 @@ document `xattr -d com.apple.quarantine`.
 
 ---
 
-## 13. Risks and sharp edges
+## 14. Risks and sharp edges
 
 | Risk | Mitigation |
 |---|---|
@@ -676,7 +750,7 @@ document `xattr -d com.apple.quarantine`.
 
 ---
 
-## 14. Decisions taken
+## 15. Decisions taken
 
 | # | Decision |
 |---|---|

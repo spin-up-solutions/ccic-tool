@@ -14,7 +14,7 @@
 #      forwarded upstream from there. That narrows DNS tunnelling; it does not
 #      close it.
 #
-# Usage: ccic-firewall [on|off|status]
+# Usage: ccic-firewall [on|off|status|allow <domain|ip|cidr>...]
 
 set -euo pipefail
 
@@ -29,7 +29,6 @@ DEFAULT_DOMAINS="
   api.anthropic.com
   console.anthropic.com
   claude.ai
-  statsig.anthropic.com
   registry.npmjs.org
   rubygems.org
   index.rubygems.org
@@ -62,6 +61,40 @@ status() {
   else
     echo "off"
   fi
+}
+
+# Add destinations to the live allowlist without a restart. Reading third-party
+# documentation is a daily activity and WebFetch resolves from inside the
+# container, so an all-or-nothing toggle would get switched off and left off.
+allow_more() {
+  if ! iptables -S OUTPUT 2>/dev/null | grep -q -- "-j ${CHAIN}"; then
+    log "firewall is off — nothing to allow"
+    return 0
+  fi
+  local added=0
+  for target in "$@"; do
+    [ -n "${target}" ] || continue
+    # A literal address or CIDR goes straight in; anything else is resolved.
+    if printf '%s' "${target}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]{1,2})?$'; then
+      ipset add "${SET_NAME}" "${target}" 2>/dev/null || true
+      log "allowed ${target}"
+      added=$((added + 1))
+      continue
+    fi
+    local ips
+    ips="$(dig +short +time=2 +tries=2 A "${target}" 2>/dev/null | grep -E '^[0-9]+\.' || true)"
+    if [ -z "${ips}" ]; then
+      log "could not resolve ${target}"
+      continue
+    fi
+    for ip in ${ips}; do
+      ipset add "${SET_NAME}" "${ip}" 2>/dev/null || true
+      added=$((added + 1))
+    done
+    log "allowed ${target} ($(echo "${ips}" | tr '\n' ' '))"
+  done
+  log "${added} destination(s) added — this lasts until the container restarts;"
+  log "use [firewall] allow in .ccic.conf to make it permanent"
 }
 
 apply() {
@@ -122,12 +155,13 @@ apply() {
   iptables -A OUTPUT -j "${CHAIN}"
   iptables -P OUTPUT DROP
 
-  log "active — ${resolved} allowed destinations"
+  log "active — $(ipset list "${SET_NAME}" | grep -c '^[0-9]') allowed destinations"
 }
 
 case "${1:-on}" in
   on)     apply ;;
   off)    teardown; log "disabled — all egress permitted" ;;
   status) status ;;
-  *)      echo "usage: ccic-firewall [on|off|status]" >&2; exit 2 ;;
+  allow)  shift; [ $# -gt 0 ] || { echo "usage: ccic-firewall allow <domain|ip|cidr>..." >&2; exit 2; }; allow_more "$@" ;;
+  *)      echo "usage: ccic-firewall [on|off|status|allow <domain|ip|cidr>...]" >&2; exit 2 ;;
 esac

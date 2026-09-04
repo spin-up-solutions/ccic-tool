@@ -52,6 +52,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 \
       libpq-dev \
       postgresql-client \
+      redis-tools \
+      file \
       libyaml-dev \
       libvips \
       pkg-config \

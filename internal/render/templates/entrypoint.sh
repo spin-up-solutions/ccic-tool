@@ -91,5 +91,10 @@ fi
 # setpriv comes from util-linux, so no gosu/su-exec dependency. exec keeps the
 # process at PID 1 semantics under `init: true`, so signals and reaping work.
 # ---------------------------------------------------------------------------
+# Readiness marker for the compose healthcheck. Setup above takes a few seconds
+# (mostly firewall DNS resolution), and without this `up` returns while the
+# container is still initialising, so `status` and `doctor` report stale state.
+: > /tmp/ccic-ready
+
 log "ready — workspace ${CCIC_WORKSPACE}, user ${CCIC_USER} (${CCIC_UID}:${CCIC_GID})"
 exec setpriv --reuid="${CCIC_UID}" --regid="${CCIC_GID}" --init-groups -- "$@"
