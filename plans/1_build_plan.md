@@ -345,11 +345,33 @@ ccic start --no-firewall
 Because the rules are applied by `iptables` inside a long-lived container, toggling is a
 `docker exec` away rather than a rebuild.
 
-**Worth knowing about what the firewall actually costs you:** `WebSearch` is executed
-server-side by Anthropic, so it keeps working behind the allowlist. `WebFetch` resolves from
-inside the container, so it fails on any domain not on the list. That asymmetry is exactly
-the research-session friction you described — *verify it in Phase 0 before writing the docs
-around it*, since it determines whether `firewall off` is a rare thing or a daily thing.
+**What the firewall actually costs you — now measured.** `WebFetch` resolves from *inside*
+the container, so it fails on any domain not on the allowlist. Confirmed in a real session:
+
+```
+WebFetch https://www.gethalfmoon.com/docs/introduction/
+  -> Error: connect ECONNREFUSED 35.173.69.207:443      (blocked)
+WebFetch https://raw.githubusercontent.com/.../README.md
+  -> Received 1.1KB (200 OK)                            (allowlisted control)
+```
+
+The control matters: it proves WebFetch itself works and the failure is the allowlist, not a
+broken tool. Note the failure is `ECONNREFUSED`, not a hang — because the firewall's terminal
+rule is `REJECT --reject-with icmp-port-unreachable` rather than `DROP`. A `DROP` would make
+every blocked fetch sit there until its timeout, which would be far worse to work with.
+
+**The practical consequence:** reading third-party documentation is a daily activity, and it
+is blocked by default. `ccic firewall off` covers a research session, but reaching for it
+constantly would hollow out the feature. Two better-targeted options, in order of preference:
+
+1. **`ccic firewall allow <domain>`** — resolve and add one domain to the running container's
+   ipset, live, with no toggle-off and no restart. A few lines on top of the existing script.
+   *Not yet built; recommended.*
+2. **`[firewall] allow` in `.ccic.conf`** — already designed, for domains a project always
+   needs.
+
+`WebSearch` is still untested. It is expected to be unaffected because Anthropic executes it
+server-side, but nothing has confirmed that yet, so treat it as an assumption.
 
 ---
 
@@ -588,12 +610,17 @@ script under `set -e`; and the uid/gid guards were verified against all three re
 - The shared base image is worth it: this machine already carries **7 near-identical
   per-project Claude images totalling ~11.2 GB**.
 
+### Verified after Phase 0, in a real session
+
+**`WebFetch` is client-side and is blocked by the allowlist** — a non-allowlisted docs site
+returned `ECONNREFUSED`, while an allowlisted control (`raw.githubusercontent.com`) returned
+200. The `.ccic.md` wording is correct as written. See §7 for the consequence and the
+recommended `ccic firewall allow <domain>` follow-up.
+
 ### Still unverified
 
-**`WebFetch` vs `WebSearch` behind the firewall.** Testing it needs an authenticated Claude
-session, which the fixture cannot have. The expectation — `WebSearch` unaffected because it
-runs server-side, `WebFetch` blocked for non-allowlisted domains — is stated in `.ccic.md`
-and should be confirmed on the first real session before that wording is trusted.
+**`WebSearch` behind the firewall.** Expected to be unaffected (server-side execution), but
+not yet demonstrated.
 
 ---
 
