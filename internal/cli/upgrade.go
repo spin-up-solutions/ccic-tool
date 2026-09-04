@@ -26,8 +26,8 @@ func upgradeCmd() *cobra.Command {
 		Short: "Update ccic to the latest release",
 		Long: "Downloads the latest release from GitHub, verifies its checksum and\n" +
 			"replaces this binary in place.\n\n" +
-			Repo + " is private, so this uses the `gh` CLI's credentials when it\n" +
-			"is installed and signed in. Without gh, only public releases are reachable.",
+			"Uses the `gh` CLI when it is installed and signed in, falling back to\n" +
+			"the public GitHub API otherwise.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			self, err := os.Executable()
 			if err != nil {
@@ -122,8 +122,7 @@ func latestTag() (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("no public release found for %s — install the `gh` CLI and run `gh auth login` "+
-			"so ccic can read the private repository", Repo)
+		return "", fmt.Errorf("%s has no releases yet", Repo)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("github returned %s", resp.Status)

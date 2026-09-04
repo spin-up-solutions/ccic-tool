@@ -11,24 +11,37 @@ bind mount and so opens directly on your machine.
 
 ## Install
 
+macOS, via Homebrew:
+
 ```sh
-gh release download --repo spin-up-solutions/ccic-tool \
-  --pattern "ccic_$(uname -s | tr 'A-Z' 'a-z')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
-tar xzf ccic_*.tar.gz && sudo mv ccic /usr/local/bin/ && rm ccic_*.tar.gz
+brew install spin-up-solutions/tap/ccic
 ```
 
-The repository is private, so `gh` (signed in) is the practical way to fetch a
-release. Afterwards, `ccic upgrade` updates in place.
+macOS or Linux:
 
-Building from source needs nothing but Go:
+```sh
+curl -fsSL https://raw.githubusercontent.com/spin-up-solutions/ccic-tool/main/install.sh | sh
+```
+
+The installer verifies the release checksum before installing, picks up
+`CCIC_VERSION` and `CCIC_INSTALL_DIR` if you set them, and falls back to
+`~/.local/bin` when `/usr/local/bin` is not writable.
+
+Either way, `ccic upgrade` updates in place afterwards.
+
+From source, which needs nothing but Go:
 
 ```sh
 go build -o bin/ccic ./cmd/ccic
 ```
 
-On macOS a binary downloaded through a browser is quarantined by Gatekeeper.
-`gh release download` and `ccic upgrade` are not affected; if you hit it anyway,
+The binaries are not notarised, so macOS quarantines anything downloaded through
+a browser. The Homebrew cask strips the attribute on install and the script
+downloads are unaffected; if you do hit it, run
 `xattr -d com.apple.quarantine /usr/local/bin/ccic`.
+
+The generated cask carries Linux URLs too, but Homebrew's cask support on Linux
+is limited — the install script is the dependable path there.
 
 ## Quick start
 

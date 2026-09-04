@@ -61,33 +61,55 @@ release:
   footer: |
     ## Install
 
+    macOS:
+
+    ```sh
+    brew install spin-up-solutions/tap/ccic
     ```
-    gh release download {{ .Tag }} --repo spin-up-solutions/ccic-tool \
-      --pattern 'ccic_*' && tar xzf ccic_*.tar.gz && sudo mv ccic /usr/local/bin/
+
+    macOS or Linux:
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/spin-up-solutions/ccic-tool/main/install.sh | sh
     ```
 
     Already have ccic? `ccic upgrade`.
 
-# Homebrew tap — disabled until the tap repository exists.
+# Homebrew tap.
 #
-# ccic-tool is a private repo, so a tap works but every user needs
-# HOMEBREW_GITHUB_API_TOKEN set to a token with read access. If ccic-tool is
-# made public this becomes the nicest install path, and it also sidesteps macOS
-# Gatekeeper quarantine on downloaded binaries.
+#   brew install spin-up-solutions/tap/ccic
 #
-# To enable: create spin-up-solutions/homebrew-tap, give the release workflow a
-# token with write access to it (secrets.TAP_GITHUB_TOKEN), then uncomment.
+# `brews` (formulae) is deprecated in GoReleaser v2; `homebrew_casks` is the
+# current form, as is `binaries` in place of `binary`. The generated cask does
+# carry Linux URLs, but Homebrew's cask support on Linux is limited, so
+# install.sh is the path we point Linux users at.
 #
-# brews:
-#   - repository:
-#       owner: spin-up-solutions
-#       name: homebrew-tap
-#       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-#     directory: Formula
-#     homepage: https://github.com/spin-up-solutions/ccic-tool
-#     description: Run Claude Code in a container, isolated from your dev environment
-#     dependencies:
-#       - name: docker
-#         type: optional
-#     test: |
-#       system "#{bin}/ccic", "--version"
+# Requires a TAP_GITHUB_TOKEN secret with write access to the tap repository,
+# because a workflow's GITHUB_TOKEN is scoped to its own repository and cannot
+# push to another one. Without that secret the cask step is skipped and the rest
+# of the release still succeeds.
+homebrew_casks:
+  - name: ccic
+    repository:
+      owner: spin-up-solutions
+      name: homebrew-tap
+      branch: main
+      # envOrDefault rather than .Env: a missing secret must not fail a release
+      # that has already published its binaries. Without the token the cask is
+      # simply skipped, and the release still succeeds.
+      token: '{{ envOrDefault "TAP_GITHUB_TOKEN" "" }}'
+    directory: Casks
+    skip_upload: '{{ if eq (envOrDefault "TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
+    homepage: https://github.com/spin-up-solutions/ccic-tool
+    description: Run Claude Code in a container, isolated from your dev environment
+    binaries: [ccic]
+    hooks:
+      post:
+        # The binary is not notarised, so macOS quarantines it on download and
+        # Gatekeeper refuses to run it. Stripping the attribute at install time
+        # is what makes `brew install` a one-step experience.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/ccic"]
+          end

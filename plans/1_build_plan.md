@@ -713,48 +713,49 @@ platform archives in 19 seconds.
 Files: `.goreleaser.yaml`, `.github/workflows/{ci,release}.yml`, `README.md`,
 `internal/cli/{version,upgrade}.go`.
 
-### The private repository changes the distribution design
+### Distribution
 
-`spin-up-solutions/ccic-tool` is private, which rules out the usual `curl | sh`
-install and makes a Homebrew tap awkward — every user would need
-`HOMEBREW_GITHUB_API_TOKEN` set to a token with read access to a private tap.
+The repository was made public during Phase 3, which settled the open question and
+made both standard install paths available:
 
-So the install path is the `gh` CLI, which every developer here already has signed
-in, and `ccic upgrade` uses the same credentials:
+| Path | Covers | Notes |
+|---|---|---|
+| `brew install spin-up-solutions/tap/ccic` | macOS | cask strips the Gatekeeper quarantine on install |
+| `curl -fsSL .../install.sh \| sh` | macOS + Linux | verifies the release checksum before installing |
+| `ccic upgrade` | both | in place, refuses to clobber a Homebrew install |
 
-- **gh present and authenticated** → authoritative. It reads private releases, and
-  its error is reported as-is.
-- **gh absent** → falls back to the public GitHub API, which only works if the repo
-  is ever made public.
+GoReleaser's cask does emit Linux URLs, but Homebrew's cask support on Linux is
+limited, so the install script is the path Linux users are pointed at rather than
+a second-class fallback.
 
-The Homebrew tap is written into `.goreleaser.yaml` but commented out, with the
-two prerequisites noted inline (create `spin-up-solutions/homebrew-tap`, add a
-`TAP_GITHUB_TOKEN` secret — `GITHUB_TOKEN` cannot write to another repository).
-Enabling it before the tap repo exists would fail the release.
-
-**If ccic-tool were made public**, the tap becomes the best install path outright:
-one `brew install`, and it sidesteps macOS Gatekeeper quarantine, which otherwise
-needs `xattr -d com.apple.quarantine` on any browser-downloaded binary. That is a
-decision about the code, not about ccic, so it is left open.
+Two external prerequisites remain for the tap: the `spin-up-solutions/homebrew-tap`
+repository must exist, and the release workflow needs a `TAP_GITHUB_TOKEN` secret
+with write access to it, because a workflow's `GITHUB_TOKEN` is scoped to its own
+repository and cannot push to another one.
 
 ### Findings
 
-1. **`upgrade` blamed the wrong thing.** With gh installed and signed in but no
+1. **`brews` is deprecated in GoReleaser v2**, replaced by `homebrew_casks`, and so is
+   `homebrew_casks.binary`, replaced by `binaries`. Both were caught by `goreleaser check`
+   — which CI runs, so shipping either would have broken the release build rather than
+   failing quietly.
+
+2. **`upgrade` blamed the wrong thing.** With gh installed and signed in but no
    releases yet, it fell through to the public API, got a 404, and told the user to
    install gh — advice that is actively wrong for someone who has it. gh is now
    authoritative when present, and reports its own error ("release not found").
 
-2. **Self-update must not clobber a Homebrew install.** `upgrade` refuses when the
+3. **Self-update must not clobber a Homebrew install.** `upgrade` refuses when the
    resolved executable path sits under `/Cellar/` or `/homebrew/` and points at
    `brew upgrade` instead, rather than writing a binary the next `brew upgrade`
    would silently overwrite.
 
-3. **Checksums are verified before installing**, and a missing checksum line is a
+4. **Checksums are verified before installing**, and a missing checksum line is a
    refusal rather than a warning. The replacement is a rename onto the target path,
    so the swap is atomic and the running process survives it; an unwritable install
    directory produces a "re-run with sudo" message rather than a permissions dump.
 
-4. **The archive name is load-bearing.** `ccic upgrade` derives it from
+5. **The archive name is load-bearing.** `ccic upgrade` derives it from
    `runtime.GOOS`/`GOARCH`, so changing `name_template` breaks self-update for every
    binary already in the field. Noted in `.goreleaser.yaml` where someone might edit it.
 
@@ -846,8 +847,8 @@ document `xattr -d com.apple.quarantine`.
 
 - **Postgres default version** — 18 works and is the default. Track latest dynamically, or
   pin and bump with ccic releases?
-- **Public or private repo?** Private works today via `gh`. Going public would enable a
-  Homebrew tap and remove the Gatekeeper friction — see §13.
+- **Homebrew tap repo** — `spin-up-solutions/homebrew-tap` and a `TAP_GITHUB_TOKEN`
+  secret still need creating before the first release; see §13.
 - **`WebFetch` behind the firewall** — needs one real session to confirm (§11).
 
 ---
