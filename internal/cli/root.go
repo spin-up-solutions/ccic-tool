@@ -40,6 +40,7 @@ func Execute() error {
 		initCmd(), buildCmd(), startCmd(), shellCmd(), execCmd(), psqlCmd(),
 		upCmd(), stopCmd(), logsCmd(), statusCmd(), doctorCmd(), firewallCmd(),
 		regenCmd(), destroyCmd(), forceRebuildCmd(), pruneCmd(),
+		versionCmd(), upgradeCmd(),
 	)
 	return root.Execute()
 }

@@ -1,0 +1,93 @@
+# GoReleaser builds the cross-platform binaries, publishes them to GitHub
+# Releases and (optionally) updates a Homebrew tap.
+#
+#   goreleaser check           validate this file
+#   goreleaser release --snapshot --clean --skip=publish   dry run, no tag needed
+#
+# A real release is driven by pushing a tag; see .github/workflows/release.yml.
+version: 2
+
+project_name: ccic
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ccic
+    main: ./cmd/ccic
+    binary: ccic
+    env:
+      # ccic shells out to the docker CLI and needs no cgo, so a fully static
+      # binary works on every target and cross-compiles without a toolchain.
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/spin-up-solutions/ccic-tool/internal/cli.Version={{ .Version }}
+      - -X github.com/spin-up-solutions/ccic-tool/internal/cli.Commit={{ .ShortCommit }}
+      - -X github.com/spin-up-solutions/ccic-tool/internal/cli.BuildDate={{ .Date }}
+
+archives:
+  - id: ccic
+    formats: [tar.gz]
+    # `ccic upgrade` derives this name from runtime.GOOS/GOARCH, so changing the
+    # template breaks self-update for every already-installed binary.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```
+    gh release download {{ .Tag }} --repo spin-up-solutions/ccic-tool \
+      --pattern 'ccic_*' && tar xzf ccic_*.tar.gz && sudo mv ccic /usr/local/bin/
+    ```
+
+    Already have ccic? `ccic upgrade`.
+
+# Homebrew tap — disabled until the tap repository exists.
+#
+# ccic-tool is a private repo, so a tap works but every user needs
+# HOMEBREW_GITHUB_API_TOKEN set to a token with read access. If ccic-tool is
+# made public this becomes the nicest install path, and it also sidesteps macOS
+# Gatekeeper quarantine on downloaded binaries.
+#
+# To enable: create spin-up-solutions/homebrew-tap, give the release workflow a
+# token with write access to it (secrets.TAP_GITHUB_TOKEN), then uncomment.
+#
+# brews:
+#   - repository:
+#       owner: spin-up-solutions
+#       name: homebrew-tap
+#       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+#     directory: Formula
+#     homepage: https://github.com/spin-up-solutions/ccic-tool
+#     description: Run Claude Code in a container, isolated from your dev environment
+#     dependencies:
+#       - name: docker
+#         type: optional
+#     test: |
+#       system "#{bin}/ccic", "--version"

@@ -698,7 +698,78 @@ Also verified on that project: `[tools]` extraction against a `mise.toml` contai
 
 ---
 
-## 13. Delivery phases
+## 13. Phase 3 results
+
+**Complete.** The release pipeline builds, and a snapshot run produced all four
+platform archives in 19 seconds.
+
+| Artifact | Size |
+|---|---|
+| `ccic_darwin_arm64.tar.gz` | 3.9 MB |
+| `ccic_darwin_amd64.tar.gz` | 4.2 MB |
+| `ccic_linux_arm64.tar.gz` | 3.8 MB |
+| `ccic_linux_amd64.tar.gz` | 4.2 MB |
+
+Files: `.goreleaser.yaml`, `.github/workflows/{ci,release}.yml`, `README.md`,
+`internal/cli/{version,upgrade}.go`.
+
+### The private repository changes the distribution design
+
+`spin-up-solutions/ccic-tool` is private, which rules out the usual `curl | sh`
+install and makes a Homebrew tap awkward — every user would need
+`HOMEBREW_GITHUB_API_TOKEN` set to a token with read access to a private tap.
+
+So the install path is the `gh` CLI, which every developer here already has signed
+in, and `ccic upgrade` uses the same credentials:
+
+- **gh present and authenticated** → authoritative. It reads private releases, and
+  its error is reported as-is.
+- **gh absent** → falls back to the public GitHub API, which only works if the repo
+  is ever made public.
+
+The Homebrew tap is written into `.goreleaser.yaml` but commented out, with the
+two prerequisites noted inline (create `spin-up-solutions/homebrew-tap`, add a
+`TAP_GITHUB_TOKEN` secret — `GITHUB_TOKEN` cannot write to another repository).
+Enabling it before the tap repo exists would fail the release.
+
+**If ccic-tool were made public**, the tap becomes the best install path outright:
+one `brew install`, and it sidesteps macOS Gatekeeper quarantine, which otherwise
+needs `xattr -d com.apple.quarantine` on any browser-downloaded binary. That is a
+decision about the code, not about ccic, so it is left open.
+
+### Findings
+
+1. **`upgrade` blamed the wrong thing.** With gh installed and signed in but no
+   releases yet, it fell through to the public API, got a 404, and told the user to
+   install gh — advice that is actively wrong for someone who has it. gh is now
+   authoritative when present, and reports its own error ("release not found").
+
+2. **Self-update must not clobber a Homebrew install.** `upgrade` refuses when the
+   resolved executable path sits under `/Cellar/` or `/homebrew/` and points at
+   `brew upgrade` instead, rather than writing a binary the next `brew upgrade`
+   would silently overwrite.
+
+3. **Checksums are verified before installing**, and a missing checksum line is a
+   refusal rather than a warning. The replacement is a rename onto the target path,
+   so the swap is atomic and the running process survives it; an unwritable install
+   directory produces a "re-run with sudo" message rather than a permissions dump.
+
+4. **The archive name is load-bearing.** `ccic upgrade` derives it from
+   `runtime.GOOS`/`GOARCH`, so changing `name_template` breaks self-update for every
+   binary already in the field. Noted in `.goreleaser.yaml` where someone might edit it.
+
+### Tests
+
+CI runs gofmt, `go vet`, `go test -race`, a cross-compile of all four targets, and
+`goreleaser check`. The tests deliberately cover the logic behind two of the bugs
+Phase 0 found the hard way — the postgres 18 mount-path branch, and `[tools]`-only
+extraction from a `mise.toml` carrying `_.source` / `_.path` / `[tasks]` — plus
+config validation, including the guard that stops an isolation volume being mounted
+over the screenshot directory and silently hiding it from the host.
+
+---
+
+## 14. Delivery phases
 
 ### Phase 0 — prove the containers by hand, no CLI ✅ **done — see §11**
 Built as `templates/{Dockerfile.base,Dockerfile.project,compose*.yml,entrypoint.sh,init-firewall.sh,ccic.md.tmpl}`
@@ -724,7 +795,7 @@ the binary.
 ### Phase 2 — the rest of the commands ✅ **done — see §12**
 `exec`, `psql`, `status`, `stop`, `logs`, `doctor`, `firewall`, `regen`, `prune`.
 
-### Phase 3 — release pipeline
+### Phase 3 — release pipeline ✅ **done — see §13**
 GoReleaser + a tag-triggered workflow: darwin/linux × arm64/amd64, checksums, GitHub
 Release, Homebrew tap. Then `ccic upgrade` / `ccic version`. Note macOS Gatekeeper will
 quarantine an unsigned download — notarise, ship via the tap (which sidesteps it), or
@@ -732,7 +803,7 @@ document `xattr -d com.apple.quarantine`.
 
 ---
 
-## 14. Risks and sharp edges
+## 15. Risks and sharp edges
 
 | Risk | Mitigation |
 |---|---|
@@ -750,7 +821,7 @@ document `xattr -d com.apple.quarantine`.
 
 ---
 
-## 15. Decisions taken
+## 16. Decisions taken
 
 | # | Decision |
 |---|---|
@@ -775,6 +846,8 @@ document `xattr -d com.apple.quarantine`.
 
 - **Postgres default version** — 18 works and is the default. Track latest dynamically, or
   pin and bump with ccic releases?
+- **Public or private repo?** Private works today via `gh`. Going public would enable a
+  Homebrew tap and remove the Gatekeeper friction — see §13.
 - **`WebFetch` behind the firewall** — needs one real session to confirm (§11).
 
 ---
