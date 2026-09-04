@@ -1,0 +1,100 @@
+# ccic compose topology.
+#
+# Phase 0 note: postgres and redis live in overlay files rather than compose
+# profiles, because a `depends_on` from an enabled service auto-activates a
+# profiled service and would defeat the opt-out. The Go generator will emit a
+# single merged file; the split here keeps both shapes testable by hand.
+#
+#   docker compose -f compose.yml -f compose.postgres.yml -p ccic-<suffix> up -d
+
+services:
+  claude:
+    image: ${CCIC_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile.project
+      args:
+        CCIC_BASE: ${CCIC_BASE_IMAGE}
+        USERNAME: ${CCIC_USER:-dev}
+        WORKSPACE: ${CCIC_WORKSPACE}
+    hostname: ${CCIC_SUFFIX}
+    init: true
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+    # NET_ADMIN/NET_RAW are only for the egress firewall. Drop both from the
+    # generated file when [firewall] enabled = false.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    networks:
+      - internal   # reaches db/redis; no route off-host
+      - egress     # reaches the internet, filtered by ccic-firewall
+
+    # No `ports:` — deliberate. The host runs its own copy of the project; the
+    # container never competes for a port. Claude reports back by writing to
+    # ${CCIC_SCREENSHOT_DIR} on the bind mount.
+
+    working_dir: ${CCIC_WORKSPACE}
+
+    volumes:
+      - ${CCIC_HOST_DIR}:${CCIC_WORKSPACE}:delegated
+      # Claude Code's auth + settings. Survives rebuilds, so you log in once.
+      - claude-config:/home/${CCIC_USER:-dev}/.claude
+      # Package-manager caches: turns most rebuilds from minutes into seconds.
+      - caches:/home/${CCIC_USER:-dev}/.cache
+      # --- isolation overlays (generated from [isolation] paths) ------------
+      # Container-only. Native extensions built here are Linux; the host's are
+      # macOS. Sharing them corrupts both.
+      - iso-node-modules:${CCIC_WORKSPACE}/node_modules
+
+    environment:
+      CCIC_USER: ${CCIC_USER:-dev}
+      CCIC_WORKSPACE: ${CCIC_WORKSPACE}
+      CCIC_SCREENSHOT_DIR: ${CCIC_WORKSPACE}/${CCIC_SCREENSHOTS:-tmp/screenshots}
+      CCIC_CHOWN_PATHS: ${CCIC_WORKSPACE}/node_modules
+      CCIC_FIREWALL: ${CCIC_FIREWALL:-1}
+      CCIC_FIREWALL_ALLOW: ${CCIC_FIREWALL_ALLOW:-}
+
+      # Both are required to stay logged in across a rebuild: the OAuth token
+      # lives in ~/.claude/.credentials.json but the account record lives in
+      # ~/.claude.json, outside that directory. CLAUDE_CONFIG_DIR moves both
+      # into the volume.
+      CLAUDE_CONFIG_DIR: /home/${CCIC_USER:-dev}/.claude
+
+      # Without this mise refuses to activate the project's mise.toml at runtime
+      # and silently falls back to ccic's own node, so the project toolchain
+      # installed at build time never gets used. Trusting it is correct: the
+      # human opted into this project explicitly via `ccic init`.
+      MISE_TRUSTED_CONFIG_PATHS: ${CCIC_WORKSPACE}
+
+      TZ: ${CCIC_TZ:-UTC}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-}
+      GIT_COMMITTER_NAME: ${GIT_AUTHOR_NAME:-}
+      GIT_COMMITTER_EMAIL: ${GIT_AUTHOR_EMAIL:-}
+
+      # Redirect build artefacts out of the workspace where the toolchain
+      # allows it; see [isolation] for the paths that cannot be redirected.
+      BUNDLE_PATH: /home/${CCIC_USER:-dev}/.cache/bundle
+      BUNDLE_APP_CONFIG: /home/${CCIC_USER:-dev}/.bundle
+      UV_PROJECT_ENVIRONMENT: /home/${CCIC_USER:-dev}/.cache/venv
+      PIP_CACHE_DIR: /home/${CCIC_USER:-dev}/.cache/pip
+      CARGO_TARGET_DIR: /home/${CCIC_USER:-dev}/.cache/cargo-target
+      npm_config_cache: /home/${CCIC_USER:-dev}/.cache/npm
+
+    env_file:
+      - path: ${CCIC_HOST_DIR}/.ccic.local.env
+        required: false
+
+networks:
+  internal:
+    internal: true
+  egress: {}
+
+volumes:
+  claude-config:
+  caches:
+  iso-node-modules:

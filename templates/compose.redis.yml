@@ -1,0 +1,24 @@
+# Overlay: redis. Same shape as postgres — internal network, no published port.
+
+services:
+  redis:
+    image: redis:${CCIC_REDIS_VERSION:-8}-alpine
+    networks:
+      - internal
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  claude:
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+
+volumes:
+  redisdata:

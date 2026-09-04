@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+#
+# ccic per-project layer. Thin by design — everything expensive lives in the
+# base image, so this rebuilds in seconds.
+#
+# The only project input is mise.toml, and only its [tools] table: ccic writes
+# a tools-only copy into the build context. A real project mise.toml often
+# carries [env] directives such as `_.source = ".env.dev"` that reference files
+# which are not (and should not be) in the build context, and which would make
+# `mise install` fail. The full project mise.toml is still on the bind mount and
+# is activated normally in an interactive shell.
+
+ARG CCIC_BASE
+FROM ${CCIC_BASE}
+
+ARG USERNAME=dev
+ARG WORKSPACE=/workspace
+
+# --- project toolchain: the one cache-busting layer -------------------------
+USER ${USERNAME}
+COPY --chown=${USERNAME} mise.toml /home/${USERNAME}/.ccic/mise.toml
+RUN cd /home/${USERNAME}/.ccic \
+ && /usr/local/bin/mise trust --yes \
+ && /usr/local/bin/mise install --yes \
+ && /usr/local/bin/mise reshim \
+ && /usr/local/bin/mise ls --installed
+
+# --- ccic runtime scripts ---------------------------------------------------
+# Kept in the project layer, not the base: updating ccic then ships new scripts
+# without forcing a multi-gigabyte base rebuild.
+USER root
+COPY entrypoint.sh    /usr/local/bin/ccic-entrypoint
+COPY init-firewall.sh /usr/local/bin/ccic-firewall
+RUN chmod 0755 /usr/local/bin/ccic-entrypoint /usr/local/bin/ccic-firewall
+
+ENV CCIC_USER=${USERNAME} \
+    CCIC_WORKSPACE=${WORKSPACE}
+
+WORKDIR ${WORKSPACE}
+ENTRYPOINT ["/usr/local/bin/ccic-entrypoint"]
+CMD ["sleep", "infinity"]

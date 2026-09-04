@@ -76,3 +76,5 @@ fonts-unifont \
 ## Stack
 
 I would like this to be deployed as a single binary. This repo will be used to build the tool, but ultimately i'd like to be able to build a binary, push it to the releases page on GitHub and then distribute it / download it from there.
+
+So maybe bun?

@@ -1,0 +1,220 @@
+# syntax=docker/dockerfile:1
+#
+# ccic base image — shared by every project on this machine.
+#
+# Contains everything that does NOT depend on the project: OS packages, the
+# non-root user, ccic's own Node, Claude Code, Playwright + Chromium, and mise.
+# Built once per (ccic version, host uid, host gid); see templates/compose.yml.
+#
+# The per-project layer (Dockerfile.project) adds only the mise toolchain.
+
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
+
+ARG UID=1000
+ARG GID=1000
+ARG USERNAME=dev
+ARG NODE_MAJOR=24
+ARG PLAYWRIGHT_VERSION=1.58.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# ---------------------------------------------------------------------------
+# 1. System packages.
+#
+# Deliberately NOT listing the libasound2t64 / libatk*t64 / libgbm1 Chromium
+# libraries by hand: `playwright install-deps` (step 3) resolves the correct
+# names for the running distro, which is the whole problem the t64 ABI
+# transition created. Fonts stay explicit — without them rendered text is
+# boxes, which makes screenshots useless for visual checks.
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      curl \
+      wget \
+      git \
+      gnupg \
+      unzip \
+      sudo \
+      tzdata \
+      zsh \
+      less \
+      jq \
+      ripgrep \
+      fd-find \
+      procps \
+      iptables \
+      ipset \
+      dnsutils \
+      iproute2 \
+      libpq-dev \
+      postgresql-client \
+      libyaml-dev \
+      libvips \
+      pkg-config \
+      libffi-dev \
+      libssl-dev \
+      zlib1g-dev \
+      fonts-liberation \
+      fonts-noto-color-emoji \
+      fonts-unifont \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. Non-root user matching the host's uid/gid.
+#
+# Two collisions to dodge, both of which bite silently:
+#   - ubuntu:24.04 ships a `ubuntu` user already occupying uid 1000.
+#   - macOS's default gid is 20 (staff), which is `dialout` in Ubuntu, so a
+#     bare `groupadd -g 20` fails. Reuse the existing group instead.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    if getent passwd "${UID}" >/dev/null; then \
+      userdel -r "$(getent passwd "${UID}" | cut -d: -f1)" 2>/dev/null || true; \
+    fi; \
+    if getent group "${GID}" >/dev/null; then \
+      GRP="$(getent group "${GID}" | cut -d: -f1)"; \
+    else \
+      groupadd -g "${GID}" "${USERNAME}"; \
+      GRP="${USERNAME}"; \
+    fi; \
+    useradd -m -u "${UID}" -g "${GRP}" -s /bin/zsh "${USERNAME}"; \
+    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${USERNAME}"; \
+    chmod 0440 "/etc/sudoers.d/${USERNAME}"
+
+# ---------------------------------------------------------------------------
+# 3. ccic's own Node, from NodeSource.
+#
+# Installed system-wide and deliberately OUTSIDE mise, so that a project
+# pinning its own node version in mise.toml can never shadow the interpreter
+# Claude Code and Playwright run on.
+# ---------------------------------------------------------------------------
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
+# ---------------------------------------------------------------------------
+# 4. Claude Code + Playwright (ccic-owned, project-independent).
+#
+# Browsers land in /opt/ms-playwright, outside both the workspace and the
+# user's home, so they survive `npm install` inside the project and are never
+# confused with a project's own Playwright.
+# ---------------------------------------------------------------------------
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN npm install -g \
+      "@anthropic-ai/claude-code" \
+      "playwright@${PLAYWRIGHT_VERSION}" \
+ && playwright install-deps chromium \
+ && playwright install chromium \
+ && rm -rf /var/lib/apt/lists/* /root/.npm \
+ && chmod -R a+rX /opt/ms-playwright
+
+# ---------------------------------------------------------------------------
+# 5. mise — binary only. Project toolchains are installed in the project layer.
+# ---------------------------------------------------------------------------
+RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
+ && chmod 0755 /usr/local/bin/mise \
+ && /usr/local/bin/mise --version
+
+# ---------------------------------------------------------------------------
+# 6. User environment.
+#
+# .claude and .cache are created here so the named volumes mounted over them
+# inherit dev ownership rather than being created root-owned by Docker.
+# ---------------------------------------------------------------------------
+USER ${USERNAME}
+WORKDIR /home/${USERNAME}
+RUN mkdir -p ~/.claude ~/.cache ~/.local/bin ~/.local/share/mise \
+ && printf '%s\n' \
+      '# managed by ccic' \
+      'eval "$(/usr/local/bin/mise activate zsh)"' \
+      'export PATH="$HOME/.local/bin:$PATH"' \
+      'setopt PROMPT_SUBST' \
+      'PROMPT="%F{cyan}ccic%f:%F{yellow}%1~%f %# "' \
+      'alias ll="ls -alh"' \
+      > ~/.zshrc \
+ && printf '%s\n' \
+      'eval "$(/usr/local/bin/mise activate bash)"' \
+      'export PATH="$HOME/.local/bin:$PATH"' \
+      > ~/.bashrc
+
+# ---------------------------------------------------------------------------
+# 7. mise shims on PATH.
+#
+# `mise activate` only runs for interactive shells, so a non-interactive
+# `docker exec ... zsh -lc 'node --version'` would silently get ccic's node
+# rather than the project's. Shims work in every context. They resolve only
+# for tools mise actually installed, so a project without node falls through
+# to ccic's node at /usr/bin/node.
+#
+# Safe for Claude Code: `claude` is a native binary, not a node script, so it
+# cannot be hijacked by a project's node version. `playwright` is a node script
+# and is pinned explicitly below.
+# ---------------------------------------------------------------------------
+ENV PATH=/home/${USERNAME}/.local/share/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER root
+
+# ---------------------------------------------------------------------------
+# 8. Browser scratch directory.
+#
+# A globally-installed npm package is NOT resolvable from an arbitrary ESM
+# script — `import { chromium } from 'playwright'` fails with ERR_MODULE_NOT_FOUND
+# no matter what NODE_PATH says, because ESM ignores it. Node resolves modules
+# from the real path of the script, so a scratch directory with playwright
+# symlinked into its node_modules gives Claude somewhere to write throwaway
+# browser scripts that just work — without adding anything to the project.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    mkdir -p /opt/ccic/browser/node_modules; \
+    ln -s /usr/lib/node_modules/playwright      /opt/ccic/browser/node_modules/playwright; \
+    ln -s /usr/lib/node_modules/playwright-core /opt/ccic/browser/node_modules/playwright-core; \
+    printf '{\n  "name": "ccic-browser",\n  "private": true,\n  "type": "module"\n}\n' \
+      > /opt/ccic/browser/package.json; \
+    chown -R ${UID}:${GID} /opt/ccic
+
+# Pin ccic's playwright CLI to ccic's node, so a project pinning an old node
+# in mise.toml cannot break it via the shims added above.
+RUN printf '#!/bin/sh\nexec /usr/bin/node /usr/lib/node_modules/playwright/cli.js "$@"\n' \
+      > /usr/local/bin/playwright \
+ && chmod 0755 /usr/local/bin/playwright
+
+# ---------------------------------------------------------------------------
+# 9. ccic-shot — one-shot screenshot helper.
+#
+# Covers the common case (render a URL, write a PNG) so Claude does not have to
+# author a script for a quick visual check.
+# ---------------------------------------------------------------------------
+RUN cat > /opt/ccic/browser/ccic-shot.mjs <<'SHOT' \
+ && chmod 0755 /opt/ccic/browser/ccic-shot.mjs \
+ && ln -s /opt/ccic/browser/ccic-shot.mjs /usr/local/bin/ccic-shot
+#!/usr/bin/node
+// ccic-shot <url|file> <output.png> [width] [height]
+import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+
+const [target, out, w = '1280', h = '800'] = process.argv.slice(2);
+if (!target || !out) {
+  console.error('usage: ccic-shot <url|file> <output.png> [width] [height]');
+  process.exit(2);
+}
+const outPath = resolve(out);
+mkdirSync(dirname(outPath), { recursive: true });
+
+const browser = await chromium.launch();
+const page = await browser.newPage({
+  viewport: { width: Number(w), height: Number(h) },
+});
+const url = /^https?:\/\//.test(target) ? target : `file://${resolve(target)}`;
+await page.goto(url, { waitUntil: 'networkidle' }).catch(() => page.goto(url));
+await page.screenshot({ path: outPath, fullPage: true });
+await browser.close();
+console.log(outPath);
+SHOT
+
+USER root
