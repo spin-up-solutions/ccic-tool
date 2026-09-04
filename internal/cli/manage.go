@@ -241,29 +241,32 @@ func pruneCmd() *cobra.Command {
 			if err := dock.Available(); err != nil {
 				return err
 			}
-			out, err := exec.Command("docker", "images",
-				"--filter", "reference=ccic-base", "--format", "{{.Repository}}:{{.Tag}}").Output()
+			inUse, err := basesInUse()
 			if err != nil {
 				return err
 			}
-			keep := render.BaseImageRef(Version, os.Getuid(), os.Getgid())
+			out, err := exec.Command("docker", "images",
+				"--filter", "reference="+render.BaseImagePrefix, "--format", "{{.Repository}}:{{.Tag}}").Output()
+			if err != nil {
+				return err
+			}
 			var removed, kept int
 			for _, ref := range strings.Fields(string(out)) {
-				if ref == keep {
+				if inUse[ref] {
 					kept++
 					continue
 				}
-				// docker refuses to remove an image a container still uses, which
-				// is exactly the safety check we want — skip on error.
 				if exec.Command("docker", "rmi", ref).Run() == nil {
 					info("removed %s", ref)
 					removed++
 				} else {
-					warn("%s is still in use — kept", ref)
 					kept++
 				}
 			}
-			okay("pruned %d base image(s), kept %d", removed, kept)
+			if kept > 0 {
+				info("kept %d base image(s) still used by a project", kept)
+			}
+			okay("pruned %d base image(s)", removed)
 			return nil
 		},
 	}
@@ -281,4 +284,29 @@ func confirmDestructive(message string) error {
 
 func note(format string, a ...any) {
 	fmt.Printf("  \033[33m•\033[0m "+format+"\n", a...)
+}
+
+// basesInUse returns the base images that ccic project images were built from.
+//
+// This cannot be delegated to `docker rmi`: removing a tag whose image has
+// child images does not fail, it silently untags it — which looks like a
+// successful prune while quietly breaking every project built on that base.
+func basesInUse() (map[string]bool, error) {
+	ids, err := exec.Command("docker", "images",
+		"--filter", "label=org.ccic.base", "--format", "{{.ID}}").Output()
+	if err != nil {
+		return nil, err
+	}
+	inUse := map[string]bool{}
+	for _, id := range strings.Fields(string(ids)) {
+		ref, err := exec.Command("docker", "image", "inspect", id,
+			"--format", `{{ index .Config.Labels "org.ccic.base" }}`).Output()
+		if err != nil {
+			continue
+		}
+		if r := strings.TrimSpace(string(ref)); r != "" {
+			inUse[r] = true
+		}
+	}
+	return inUse, nil
 }

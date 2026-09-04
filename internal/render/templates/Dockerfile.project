@@ -13,6 +13,16 @@
 ARG CCIC_BASE
 FROM ${CCIC_BASE}
 
+# An ARG declared before FROM is only in scope for FROM itself, so it has to be
+# re-declared here or the LABEL below silently expands to an empty string.
+ARG CCIC_BASE
+
+# Records which base this image was built from. `ccic prune` reads it to work
+# out which bases are still spoken for — `docker rmi` cannot be used for that,
+# because removing a tag that has child images silently untags it instead of
+# refusing, which looks like success while breaking every project on that base.
+LABEL org.ccic.base="${CCIC_BASE}"
+
 ARG USERNAME=dev
 ARG WORKSPACE=/workspace
 

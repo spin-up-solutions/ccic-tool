@@ -3,6 +3,8 @@ package render
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,11 +69,30 @@ type View struct {
 	NodeMajor        string
 }
 
-// BaseImageRef is the shared base, tagged per ccic version and per host
-// uid/gid because both are baked into the image.
-func BaseImageRef(version string, uid, gid int) string {
-	return fmt.Sprintf("ccic-base:%s-u%d-g%d", version, uid, gid)
+// BaseImageRef derives the shared base image tag from the content of the base
+// Dockerfile and the arguments it is built with.
+//
+// Deliberately NOT keyed to the ccic version. Doing that invalidated every
+// project's base image on every release — including CLI-only bugfixes that do
+// not touch the image at all — forcing a multi-gigabyte rebuild on every
+// machine for no reason, which defeats most of the point of sharing a base.
+// Hashing the real inputs means the base is rebuilt exactly when its definition
+// changes, and reused otherwise.
+//
+// uid/gid appear in the tag as well as the hash because they are baked into the
+// image and it helps to see which user a given base belongs to.
+func BaseImageRef(c *config.Config, uid, gid int) string {
+	h := sha256.New()
+	if df, err := assets.ReadFile("templates/Dockerfile.base"); err == nil {
+		h.Write(df)
+	}
+	fmt.Fprintf(h, "\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d",
+		c.Image.Base, c.Image.NodeMajor, c.Image.PlaywrightVersion, User, uid, gid)
+	return fmt.Sprintf("ccic-base:u%d-g%d-%s", uid, gid, hex.EncodeToString(h.Sum(nil))[:12])
 }
+
+// BaseImagePrefix matches every base image ccic has ever built, for pruning.
+const BaseImagePrefix = "ccic-base"
 
 func ProjectName(c *config.Config) string { return "ccic-" + c.Suffix }
 func ImageRef(c *config.Config) string    { return "ccic-" + c.Suffix + ":latest" }
@@ -138,7 +159,7 @@ func NewView(c *config.Config, hostDir, version string, uid, gid int) *View {
 	return &View{
 		Cfg: c, Version: version, HostDir: hostDir, User: User, UID: uid, GID: gid,
 		ImageName:        ImageRef(c),
-		BaseImage:        BaseImageRef(version, uid, gid),
+		BaseImage:        BaseImageRef(c, uid, gid),
 		Timezone:         config.HostTimezone(),
 		GitName:          name,
 		GitEmail:         email,

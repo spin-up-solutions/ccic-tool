@@ -199,16 +199,20 @@ session possible. A `docker compose run --rm` design forecloses all three.
 ## 6. Images: shared base + thin project layer
 
 ```
-ccic-base:<ccic-version>-u<UID>-g<GID>        built once per machine, shared by all projects
-  ubuntu:24.04 + apt + user + node + mise + claude-code + playwright + chromium   (~3-4 GB)
+ccic-base:u<UID>-g<GID>-<hash>                built once per machine, shared by all projects
+  ubuntu:24.04 + apt + user + node + mise + claude-code + playwright + chromium   (~2.5 GB)
         │
         └── ccic-<suffix>:latest              per-project, seconds to build
               COPY mise.toml ; mise install
 ```
 
-Ten projects then cost one base image plus ten small layers rather than ten × 4 GB. The UID
-and GID are baked into the base, so they go in the tag — if they ever change, you get a new
-base rather than a silently wrong one.
+`<hash>` covers the base Dockerfile's content plus everything it is built with —
+base image, node major, Playwright version, username, uid and gid. It is
+deliberately **not** the ccic version: see §13.
+
+Ten projects then cost one base image plus ten small layers rather than ten × 2.5 GB. The
+uid and gid are baked into the image, so they appear in the tag as well as the hash — if
+they change you get a new base rather than a silently wrong one.
 
 - `ccic build` — builds the base if absent, then the project layer.
 - `ccic destroy` — removes the project image and volumes, **never** the shared base.
@@ -755,7 +759,26 @@ repository and cannot push to another one.
    so the swap is atomic and the running process survives it; an unwritable install
    directory produces a "re-run with sudo" message rather than a permissions dump.
 
-5. **The archive name is load-bearing.** `ccic upgrade` derives it from
+5. **The base image tag must not be keyed to the ccic version.** Shipping v0.4.0 revealed
+   this immediately: the newly installed binary looked for `ccic-base:0.4.0-…`, did not find
+   the existing `ccic-base:0.1.0-…`, and reported the base as missing. Every ccic release —
+   including a CLI-only bugfix that does not touch the Dockerfile — would have forced a
+   multi-gigabyte rebuild on every machine, defeating most of the point of sharing a base.
+   The tag is now `ccic-base:u<uid>-g<gid>-<hash>`, where the hash covers the base
+   Dockerfile's content and its build args, so the base rebuilds exactly when its definition
+   changes.
+
+   Fixing that exposed a second bug in `prune`. The first attempt delegated the "is it in
+   use?" question to docker, on the assumption that `docker rmi` refuses to remove an image
+   with child images. **It does not** — for a tag with other references it silently
+   *untags* instead, which looks like a successful prune while leaving every project built
+   on that base unable to find it. `prune` now reads an `org.ccic.base` label that the
+   project image records, so it knows exactly which bases are spoken for across every
+   project on the machine. (Setting that label needed `ARG CCIC_BASE` re-declared *after*
+   `FROM`: an ARG declared before `FROM` is only in scope for `FROM` itself, and the label
+   had been expanding to an empty string.)
+
+6. **The archive name is load-bearing.** `ccic upgrade` derives it from
    `runtime.GOOS`/`GOARCH`, so changing `name_template` breaks self-update for every
    binary already in the field. Noted in `.goreleaser.yaml` where someone might edit it.
 
