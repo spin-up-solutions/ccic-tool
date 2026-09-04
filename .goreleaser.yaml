@@ -86,20 +86,21 @@ release:
 #
 # Requires a TAP_GITHUB_TOKEN secret with write access to the tap repository,
 # because a workflow's GITHUB_TOKEN is scoped to its own repository and cannot
-# push to another one. Without that secret the cask step is skipped and the rest
-# of the release still succeeds.
+# push to another one. To release without touching the tap, pass
+# `--skip=homebrew`.
+#
+# NOTE: `goreleaser check` validates the schema but does NOT execute templates,
+# and `--snapshot` skips publishing, so neither exercises this token field. A
+# bad template here only shows up in a real release — after the binaries have
+# already been uploaded. Keep it to the plain `.Env` form.
 homebrew_casks:
   - name: ccic
     repository:
       owner: spin-up-solutions
       name: homebrew-tap
       branch: main
-      # envOrDefault rather than .Env: a missing secret must not fail a release
-      # that has already published its binaries. Without the token the cask is
-      # simply skipped, and the release still succeeds.
-      token: '{{ envOrDefault "TAP_GITHUB_TOKEN" "" }}'
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     directory: Casks
-    skip_upload: '{{ if eq (envOrDefault "TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
     homepage: https://github.com/spin-up-solutions/ccic-tool
     description: Run Claude Code in a container, isolated from your dev environment
     binaries: [ccic]
